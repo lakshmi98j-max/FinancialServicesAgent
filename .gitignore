@@ -1,0 +1,22 @@
+# secrets
+.env
+.streamlit/secrets.toml
+
+# generated database (rebuild with: python -m mockworld.seed)
+data/
+*.db
+*.sqlite
+
+# raw eval run logs (summaries in evals/results/ are committed)
+evals/results/runs/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/

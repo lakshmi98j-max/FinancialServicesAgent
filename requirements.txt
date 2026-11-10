@@ -1,0 +1,4 @@
+claude-agent-sdk==0.2.180
+streamlit==1.67.0
+pytest==9.2.0
+pyyaml==6.0.3
