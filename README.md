@@ -32,12 +32,12 @@ and a `claude` command for signing in.
 1. On GitHub, open the repository and select the branch you want to run.
 2. Click **Code**, open the **Codespaces** tab, and create a codespace on that branch. Setup takes about two minutes.
 3. In the codespace terminal, run `claude`, sign in with your Claude account, then type `/exit`.
-4. Open the **Ports** tab and open port 8501, labelled "Larkmoor demo", in the browser. If the page was already open
-   before you signed in, click **Reset demo**.
+4. Open the **Ports** tab and click the globe icon on port 8501, labelled "Larkmoor demo". The address looks like
+   `https://<codespace-name>-8501.app.github.dev`. The localhost, network and external URLs that Streamlit prints
+   do not work from your browser. If the page was already open before you signed in, click **Reset demo**.
 
 If `claude` is not found, setup has not finished or did not run. Run `bash .devcontainer/setup.sh`, wait for
-"Setup complete", then start the demo with
-`python3 -m streamlit run ui/app.py --server.enableCORS false --server.enableXsrfProtection false`.
+"Setup complete", then start the demo with `bash .devcontainer/demo.sh`, which prints the address to open.
 
 Keep port 8501 **Private**. A public port would let anyone chat with the agent on your Claude login. Stop the
 codespace when you finish so it does not use your free monthly hours. For the command-line chat, run

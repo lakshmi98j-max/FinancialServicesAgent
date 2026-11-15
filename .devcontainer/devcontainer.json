@@ -4,7 +4,7 @@
   "postCreateCommand": "bash .devcontainer/setup.sh",
   "waitFor": "postCreateCommand",
   "postAttachCommand": {
-    "demo": "python3 -m streamlit run ui/app.py --server.headless true --server.enableCORS false --server.enableXsrfProtection false"
+    "demo": "bash .devcontainer/demo.sh"
   },
   "forwardPorts": [
     8501
