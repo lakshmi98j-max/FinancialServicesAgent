@@ -35,6 +35,10 @@ and a `claude` command for signing in.
 4. Open the **Ports** tab and open port 8501, labelled "Larkmoor demo", in the browser. If the page was already open
    before you signed in, click **Reset demo**.
 
+If `claude` is not found, setup has not finished or did not run. Run `bash .devcontainer/setup.sh`, wait for
+"Setup complete", then start the demo with
+`python3 -m streamlit run ui/app.py --server.enableCORS false --server.enableXsrfProtection false`.
+
 Keep port 8501 **Private**. A public port would let anyone chat with the agent on your Claude login. Stop the
 codespace when you finish so it does not use your free monthly hours. For the command-line chat, run
 `python3 -m agent.chat` in the codespace terminal.
