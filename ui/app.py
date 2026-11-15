@@ -67,10 +67,15 @@ def start_conversation(version: str) -> None:
         old.agent.conn.close()
     if not DB_PATH.exists():
         reset_db()
-    with st.spinner("Starting the agent..."):
-        st.session_state.agent = BlockingAgent(version, connect())
     st.session_state.messages = []
     st.session_state.turns = []
+    st.session_state.start_error = None
+    with st.spinner("Starting the agent..."):
+        try:
+            st.session_state.agent = BlockingAgent(version, connect())
+        except Exception as exc:   # shown on the page instead of a stack trace
+            st.session_state.pop("agent", None)
+            st.session_state.start_error = f"{type(exc).__name__}: {exc}"
 
 
 def reset_demo() -> None:
@@ -193,8 +198,15 @@ def main() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
     if "version" not in st.session_state:
         st.session_state.version = list_versions()[-1]
-    if "agent" not in st.session_state:
+    if "agent" not in st.session_state and not st.session_state.get("start_error"):
         start_conversation(st.session_state.version)
+    if st.session_state.get("start_error"):
+        st.error(f"The agent could not start. Check that you are signed in to Claude (run `claude` in a terminal), "
+                 f"then try again.\n\n{st.session_state.start_error}")
+        if st.button("Try again"):
+            start_conversation(st.session_state.version)
+            st.rerun()
+        st.stop()
     sidebar()
     st.markdown('<div class="banner"><b>Fictional company.</b> Larkmoor Invest and all customers are invented. '
                 '<b>Illustrative policy.</b> <b>Not financial advice.</b></div>', unsafe_allow_html=True)

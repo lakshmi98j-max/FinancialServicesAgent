@@ -52,3 +52,10 @@ def test_mcp_wrappers_route_through_run_tool(conn, session):
         {"locator": "priya.raman@example.com", "date_of_birth": "1984-03-12", "security_word": "saffron"}))
     assert ok["is_error"] is False and session.verified_customer_id == 1
     assert [c.name for c in session.trace] == ["get_account_summary", "verify_identity"]
+
+
+def test_claude_errors_become_actionable_messages():
+    from agent.agent import error_message
+    assert "Run `claude`" in error_message("authentication_failed")
+    assert "usage limit" in error_message("rate_limit")
+    assert error_message("something_new") == "Claude returned an error: something_new"

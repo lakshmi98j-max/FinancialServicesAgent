@@ -60,6 +60,18 @@ class AgentError(RuntimeError):
     pass
 
 
+ERROR_HELP = {
+    "authentication_failed": "Not signed in to Claude. Run `claude` in a terminal and sign in, then start a new "
+                             "conversation (Reset demo in the UI, /reset in the CLI).",
+    "rate_limit": "Your Claude usage limit has been reached. Wait for it to reset, then try again.",
+    "billing_error": "Claude reported a billing problem with the account in use.",
+}
+
+
+def error_message(code: str) -> str:
+    return ERROR_HELP.get(code, f"Claude returned an error: {code}")
+
+
 class Agent:
     def __init__(self, version: str = "v1", conn=None):
         self.version = load_version(version)
@@ -90,7 +102,7 @@ class Agent:
         async for msg in self._client.receive_response():
             if isinstance(msg, AssistantMessage):
                 if msg.error:
-                    raise AgentError(f"Claude returned an error: {msg.error}")
+                    raise AgentError(error_message(msg.error))
                 if msg.parent_tool_use_id is None:
                     parts += [b.text for b in msg.content if isinstance(b, TextBlock)]
             elif isinstance(msg, RateLimitEvent):

@@ -22,8 +22,24 @@ to a licensed advisor with a clean summary. A tau-bench style evaluation harness
 | `agent/chat.py` | Command-line chat |
 | `ui/app.py` | Streamlit demo with a side panel of tool calls and policy rules |
 | `tests/` | Unit tests for the seed, every tool, and the agent wiring. No model calls |
+| `.devcontainer/` | GitHub Codespaces setup |
 
-## Run it
+## Run it in GitHub Codespaces
+
+The repository includes a dev container, so a codespace sets itself up: Python, dependencies, the mock database,
+and a `claude` command for signing in.
+
+1. On GitHub, open the repository and select the branch you want to run.
+2. Click **Code**, open the **Codespaces** tab, and create a codespace on that branch. Setup takes about two minutes.
+3. In the codespace terminal, run `claude`, sign in with your Claude account, then type `/exit`.
+4. Open the **Ports** tab and open port 8501, labelled "Larkmoor demo", in the browser. If the page was already open
+   before you signed in, click **Reset demo**.
+
+Keep port 8501 **Private**. A public port would let anyone chat with the agent on your Claude login. Stop the
+codespace when you finish so it does not use your free monthly hours. For the command-line chat, run
+`python3 -m agent.chat` in the codespace terminal.
+
+## Run it locally
 
 Requires Python 3.11 or newer.
 
@@ -31,7 +47,7 @@ Requires Python 3.11 or newer.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m mockworld.seed        # builds data/larkmoor.db, which is not committed
-pytest                          # 77 tests, no model calls
+pytest                          # 80 tests, no model calls
 ```
 
 The agent calls Claude through the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview), which
