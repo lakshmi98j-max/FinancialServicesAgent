@@ -1,0 +1,5 @@
+{
+  "description": "Baseline: one plain system prompt plus the tools.",
+  "effort": "low",
+  "max_tool_rounds": 10
+}

@@ -1,4 +1,5 @@
 """Every tool, every code-enforced rule."""
+import inspect
 import json
 
 import pytest
@@ -81,6 +82,8 @@ def test_factor_values_never_appear_in_any_tool_output(conn, verified):
     ("get_transfer_status", {}),
     ("get_performance_breakdown", {"account_id": 101}),
     ("create_advisor_handoff", {"reason_category": "advice_request", "summary": "x" * 50, "customer_goal": "wants help"}),
+    ("cancel_withdrawal", {"withdrawal_id": "WD-24125", "confirmed": True}),
+    ("update_statement_delivery", {"electronic": True, "confirmed": True}),
 ])
 def test_gated_tools_refuse_before_verification(conn, session, name, args):
     r = run_tool(session, conn, name, args)
@@ -91,7 +94,8 @@ def test_gated_tools_refuse_before_verification(conn, session, name, args):
 def test_gate_marker_matches_registry():
     gated = {n for n, f in tools.TOOLS.items() if getattr(f, "requires_verification", False)}
     assert gated == {"get_account_summary", "get_withdrawal_status", "get_transfer_status",
-                     "get_performance_breakdown", "create_advisor_handoff"}
+                     "get_performance_breakdown", "create_advisor_handoff", "cancel_withdrawal",
+                     "update_statement_delivery"}
 
 
 def test_verified_customer_cannot_read_another_customers_account(conn, verified):
@@ -170,6 +174,15 @@ def test_fee_charges_after_verification(conn):
     tools.verify_identity(s, conn, "t.nowicki@example.com", date_of_birth="1972-04-05", bank_last4="5518")
     r = tools.get_fee_details(s, conn, fee_type="wire_outgoing")
     assert r["recent_charges"][0]["amount"] == -25.0 and r["recent_charges"][0]["account_number_masked"] == "****6342"
+    assert r["statement_delivery"] == "electronic"
+
+
+def test_paper_customer_sees_paper_fees_and_delivery_setting(conn):
+    s = Session()
+    tools.verify_identity(s, conn, "samuel.okafor@example.com", date_of_birth="1975-07-19", bank_last4="4408")
+    r = tools.get_fee_details(s, conn)
+    assert r["statement_delivery"] == "paper"
+    assert [c["amount"] for c in r["recent_charges"]] == [-5.0, -5.0, -5.0]
 
 
 # ------------------------------------------------------------------ performance (R6)
@@ -193,6 +206,14 @@ def test_performance_period_starts(conn, verified, period, start):
 def test_performance_rejects_bad_period_and_default_is_3m(conn, verified):
     assert tools.get_performance_breakdown(verified, conn, 101, "2W")["error"] == "INVALID_PERIOD"
     assert tools.get_performance_breakdown(verified, conn, 101)["period"] == "3M"
+
+
+def test_performance_caution_when_account_opened_mid_period(conn, verified):
+    assert tools.get_performance_breakdown(verified, conn, 101, "1Y")["caution"] is None
+    s = Session()
+    tools.verify_identity(s, conn, "noah.feldman@example.com", date_of_birth="1998-04-09", security_word="maple")
+    r = tools.get_performance_breakdown(s, conn, 122, "1Y")
+    assert r["ok"] and "2026-09-15" in r["caution"]
 
 
 def test_performance_breakdown_never_recommends(conn, verified):
@@ -274,7 +295,7 @@ def test_run_tool_records_trace_with_rules(conn, session):
     names = [c.name for c in session.trace]
     assert names == ["get_fee_details", "verify_identity", "get_account_summary"]
     assert all(c.ok for c in session.trace)
-    assert session.trace[1].rules == ["R1", "R2"] and session.trace[2].rules == ["R1"]
+    assert session.trace[1].rules == ["R1", "R2"] and session.trace[2].rules == ["R1", "R11"]
 
 
 def test_run_tool_handles_unknown_tool_and_bad_arguments(conn, verified):
@@ -287,3 +308,70 @@ def test_run_tool_handles_unknown_tool_and_bad_arguments(conn, verified):
 def test_every_tool_has_a_spec_and_rule_mapping():
     spec_names = {s["name"] for s in tools.TOOL_SPECS}
     assert spec_names == set(tools.TOOLS) == set(tools.TOOL_RULES)
+
+
+# ------------------------------------------------------------------ write actions (R9)
+
+@pytest.fixture
+def oliver(conn):
+    """Customer 16, who has pending withdrawal WD-24125 and is on electronic statements."""
+    s = Session()
+    assert tools.verify_identity(s, conn, "oliver.brennan@example.com", date_of_birth="1995-12-19", security_word="falcon")["ok"]
+    return s
+
+
+def _withdrawal_status(conn, wid):
+    return conn.execute("SELECT status FROM withdrawals WHERE withdrawal_id = ?", (wid,)).fetchone()[0]
+
+
+def test_cancel_requires_explicit_confirmation(conn, oliver):
+    for confirmed in (False, "yes", 1, None):
+        r = tools.cancel_withdrawal(oliver, conn, "WD-24125", confirmed=confirmed)
+        assert r["error"] == "CONFIRMATION_REQUIRED"
+    assert _withdrawal_status(conn, "WD-24125") == "pending"
+
+
+def test_cancel_pending_withdrawal(conn, oliver):
+    r = tools.cancel_withdrawal(oliver, conn, "wd-24125", confirmed=True)
+    assert r["ok"] and r["status"] == "cancelled" and r["amount"] == 2000.0
+    assert _withdrawal_status(conn, "WD-24125") == "cancelled"
+    again = tools.cancel_withdrawal(oliver, conn, "WD-24125", confirmed=True)
+    assert again["error"] == "NOT_CANCELLABLE" and again["current_status"] == "cancelled"
+    listed = tools.get_withdrawal_status(oliver, conn, withdrawal_id="WD-24125")["withdrawals"][0]
+    assert "No money left the account" in listed["explanation"]
+
+
+def test_cannot_cancel_processing_or_someone_elses_withdrawal(conn, oliver):
+    assert tools.cancel_withdrawal(oliver, conn, "WD-24117", confirmed=True)["error"] == "WITHDRAWAL_NOT_FOUND"
+    s = Session()
+    tools.verify_identity(s, conn, "marcus.oyelaran@example.com", date_of_birth="1979-08-23", security_word="harbor")
+    r = tools.cancel_withdrawal(s, conn, "WD-24117", confirmed=True)
+    assert r["error"] == "NOT_CANCELLABLE" and r["current_status"] == "processing"
+    assert _withdrawal_status(conn, "WD-24117") == "processing"
+
+
+def test_switch_to_electronic_statements(conn):
+    s = Session()
+    tools.verify_identity(s, conn, "samuel.okafor@example.com", date_of_birth="1975-07-19", security_word="cobalt")
+    assert tools.update_statement_delivery(s, conn, True)["error"] == "CONFIRMATION_REQUIRED"
+    r = tools.update_statement_delivery(s, conn, True, confirmed=True)
+    assert r["ok"] and r["changed"] and "not refunded" in r["message"]
+    assert conn.execute("SELECT e_delivery FROM customers WHERE customer_id = 10").fetchone()[0] == 1
+    again = tools.update_statement_delivery(s, conn, True, confirmed=True)
+    assert again["ok"] and again["changed"] is False
+    assert tools.update_statement_delivery(s, conn, "yes", confirmed=True)["error"] == "BAD_ARGUMENTS"
+
+
+# ------------------------------------------------------------------ schemas match the Python functions
+
+@pytest.mark.parametrize("spec", tools.TOOL_SPECS, ids=lambda s: s["name"])
+def test_schema_matches_function_signature(spec):
+    schema = spec["input_schema"]
+    assert schema["type"] == "object" and schema["additionalProperties"] is False
+    assert set(schema["required"]) <= set(schema["properties"])
+    params = inspect.signature(tools.TOOLS[spec["name"]]).parameters  # follows functools.wraps to the real tool
+    py_args = [n for n in params if n not in ("session", "conn")]
+    assert set(schema["properties"]) == set(py_args), spec["name"]
+    py_required = {n for n in py_args if params[n].default is inspect.Parameter.empty}
+    assert py_required <= set(schema["required"]), spec["name"]
+    assert len(spec["description"]) > 40

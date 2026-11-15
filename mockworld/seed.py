@@ -172,12 +172,16 @@ WITHDRAWALS = [
     ("WD-24117", 102, "2026-11-05", 2500.00, "3302", "ach", "processing",
      None, "2026-11-10", "2026-11-06"),
     ("WD-24120", 103, "2026-11-04", 1800.00, "8821", "ach", "on_hold",
-     "Destination bank account ending 8821 was linked on 2026-11-03. New bank links are held for 5 business days "
-     "before the first withdrawal as a fraud-protection measure. The hold lifts on 2026-11-10 and funds are released "
-     "the next business day.", "2026-11-12", "2026-11-04"),
+     "Destination bank account ending 8821 was linked on Tuesday 2026-11-03. New bank links are held for 5 business "
+     "days before the first withdrawal as a fraud-protection measure. The hold ends after Tuesday 2026-11-10, the "
+     "withdrawal is processed on 2026-11-11, and funds usually arrive by 2026-11-12.", "2026-11-12", "2026-11-04"),
     ("WD-24122", 112, "2026-11-06", 4000.00, "3376", "ach", "rejected",
-     "Requested amount exceeded settled cash. Proceeds of $1,570.00 from the sale of 50 QLBT on 2026-11-06 settle on "
-     "2026-11-07, one business day after the trade. Settled cash available on 2026-11-06: $3,230.00.", None, "2026-11-06"),
+     "Requested amount exceeded settled cash. Proceeds of $1,570.00 from the sale of 50 QLBT on Friday 2026-11-06 "
+     "settle on Monday 2026-11-09, one business day after the trade. Settled cash available on 2026-11-06: $3,230.00.",
+     None, "2026-11-06"),
+    ("WD-24125", 118, "2026-11-06", 2000.00, "6691", "ach", "pending",
+     "Requested on 2026-11-06 after the 4 pm Eastern cutoff. Processing starts on the next business day, Monday "
+     "2026-11-09. A pending withdrawal can still be cancelled.", "2026-11-11", "2026-11-06"),
 ]
 
 # transfer_id, account_id, direction, counterparty, transfer_type, amount, status, status_reason, initiated_on, estimated_completion_on, updated_on
@@ -209,7 +213,7 @@ SPECIAL_TRANSACTIONS = [
     (107, "2026-04-06", "fee", None, None, -11.17, "Quarterly advisory fee (0.25% annual rate)"),
     (107, "2026-07-06", "fee", None, None, -11.42, "Quarterly advisory fee (0.25% annual rate)"),
     (107, "2026-10-05", "fee", None, None, -11.09, "Quarterly advisory fee (0.25% annual rate)"),
-    (112, "2026-11-06", "sell", "QLBT", 50, 1570.00, "Sold 50 QLBT at $31.40 (settles 2026-11-07)"),
+    (112, "2026-11-06", "sell", "QLBT", 50, 1570.00, "Sold 50 QLBT at $31.40 (settles 2026-11-09)"),
     (114, "2026-11-03", "transfer_out", None, None, -5000.00, "Transfer to Larkmoor Roth IRA ending 4983 (TR-30555)"),
     (115, "2026-11-03", "transfer_in", None, None, 5000.00, "Transfer from Larkmoor account ending 4172 (TR-30555)"),
 ]
@@ -259,7 +263,7 @@ def build(conn: sqlite3.Connection) -> None:
 
 def memory_db() -> sqlite3.Connection:
     """A fresh, fully seeded in-memory database. Evals give every conversation one of these."""
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     build(conn)
     return conn

@@ -81,7 +81,7 @@ CREATE TABLE withdrawals (
   amount                 REAL NOT NULL,
   destination_bank_last4 TEXT NOT NULL,
   method                 TEXT NOT NULL,   -- ach | wire
-  status                 TEXT NOT NULL,   -- pending | processing | completed | on_hold | rejected
+  status                 TEXT NOT NULL,   -- pending | processing | completed | on_hold | rejected | cancelled
   status_reason          TEXT,
   expected_arrival_on    TEXT,
   updated_on             TEXT NOT NULL

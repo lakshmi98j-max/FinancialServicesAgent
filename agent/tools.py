@@ -1,23 +1,27 @@
-"""The eight tools the agent can call, and the dispatcher that runs them.
+"""The ten tools the agent can call, and the dispatcher that runs them.
 
 Everything that can be enforced in code is enforced here, so the model never has to be trusted with it:
   * account tools refuse to return anything until the session is verified          (policy R1)
   * verification needs two matching factors, never says which factor failed,
     and locks the session after three misses                                       (policy R2)
-  * a verified customer can only reach their own accounts                           (policy R1)
+  * a verified customer can only reach their own accounts                           (policy R1, R11)
   * the performance tool attaches the disclosure the agent must relay              (policy R6)
   * a handoff is refused unless its structured summary is complete                 (policy R7)
   * an escalation is recorded even when the session was never verified            (policy R8)
+  * write actions need confirmed=true and only touch what is still changeable      (policy R9)
 What stays with the model: deciding when a handoff or escalation is warranted, declining advice
-gracefully, and tone. Those live in policy.md and the version prompts.
+gracefully, asking for confirmation, and tone. Those live in policy.md and the version prompts.
+The split is listed rule by rule in policy.md.
 
 Every tool takes (session, conn, **args) and returns a JSON-serialisable dict with an "ok" flag.
 """
+import functools
 import json
 from datetime import date, datetime
 
 from config import AS_OF
 from mockworld.db import one, rows
+from mockworld.seed import FEE_SCHEDULE
 from agent.session import Session, ToolCall
 
 MAX_VERIFICATION_ATTEMPTS = 3
@@ -41,6 +45,7 @@ WITHDRAWAL_STATUS_TEXT = {
     "completed": "Funds were sent to the destination bank. Some banks take one more business day to post them.",
     "on_hold": "The withdrawal is paused. See status_reason for why and when it will resume.",
     "rejected": "The withdrawal was not processed. See status_reason for why and what the customer can do.",
+    "cancelled": "The withdrawal was cancelled before processing. No money left the account.",
 }
 TRANSFER_STATUS_TEXT = {
     "initiated": "The request has been submitted and is waiting for the other firm to respond.",
@@ -128,14 +133,13 @@ def _own_accounts(session: Session, conn, account_id=None) -> list[dict]:
 
 def requires_verification(fn):
     """Decorator: the tool returns SESSION_NOT_VERIFIED instead of running until verify_identity has succeeded."""
+    @functools.wraps(fn)
     def wrapper(session: Session, conn, *args, **kwargs):
         if not session.verified:
             return _err("SESSION_NOT_VERIFIED",
                         "Identity must be verified before any account information can be shared. "
                         "Call verify_identity first.")
         return fn(session, conn, *args, **kwargs)
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
     wrapper.requires_verification = True
     return wrapper
 
@@ -304,6 +308,7 @@ def get_fee_details(session: Session, conn, fee_type=None) -> dict:
         for c in charges:
             c["account_number_masked"] = _mask(c.pop("account_number"))
         result["recent_charges"] = charges
+        result["statement_delivery"] = "electronic" if _customer(conn, session.verified_customer_id)["e_delivery"] else "paper"
         result["note"] = None if charges else "No fees were charged on the customer's accounts in the last 12 months."
     else:
         result["recent_charges"] = None
@@ -344,6 +349,10 @@ def get_performance_breakdown(session: Session, conn, account_id, period="3M") -
                          JOIN benchmark_returns r ON r.benchmark_id = b.benchmark_id AND r.period = ?
                          WHERE b.benchmark_id = ?""", (period, acct["benchmark_id"]))
     period_start = _period_start(period)
+    caution = None
+    if acct["opened_on"] > period_start:
+        caution = (f"The account was opened on {acct['opened_on']}, after the period start. These figures show how the "
+                   "current holdings performed over the whole period, not the customer's own experience.")
     flows = one(conn, """SELECT COALESCE(SUM(amount), 0) AS net FROM transactions
                          WHERE account_id = ? AND posted_on >= ?
                          AND type IN ('deposit', 'withdrawal', 'transfer_in', 'transfer_out')""",
@@ -359,6 +368,7 @@ def get_performance_breakdown(session: Session, conn, account_id, period="3M") -
         net_cash_flows_in_period=round(flows["net"], 2),
         method_note="Return is computed on invested holdings only and assumes they were held for the whole period. "
                     "Cash and deposits or withdrawals during the period are excluded from the return figure.",
+        caution=caution,
         required_disclosure=PERFORMANCE_DISCLOSURE,
     )
 
@@ -419,6 +429,48 @@ def escalate_to_human(session: Session, conn, reason_category, details, urgency=
                message=ESCALATION_MESSAGES.get(reason_category, DEFAULT_ESCALATION_MESSAGE))
 
 
+@requires_verification
+def cancel_withdrawal(session: Session, conn, withdrawal_id, confirmed=False) -> dict:
+    """Cancel a withdrawal that has not started processing. The customer must have explicitly said yes."""
+    if confirmed is not True:
+        return _err("CONFIRMATION_REQUIRED", "Restate exactly what will be cancelled and ask the customer to confirm. "
+                    "Call again with confirmed=true only after they clearly say yes.")
+    accounts = _own_accounts(session, conn)
+    ids = tuple(a["account_id"] for a in accounts)
+    w = one(conn, f"SELECT * FROM withdrawals WHERE withdrawal_id = ? AND account_id IN ({','.join('?' * len(ids))})",
+            (str(withdrawal_id).strip().upper(), *ids))
+    if not w:
+        return _err("WITHDRAWAL_NOT_FOUND", "No withdrawal with that id exists on the customer's accounts.")
+    if w["status"] != "pending":
+        return _err("NOT_CANCELLABLE", f"Withdrawal {w['withdrawal_id']} is {w['status']} and can no longer be cancelled. "
+                    "Only pending withdrawals can be cancelled.", current_status=w["status"])
+    conn.execute("UPDATE withdrawals SET status = 'cancelled', status_reason = ?, expected_arrival_on = NULL, "
+                 "updated_on = ? WHERE withdrawal_id = ?",
+                 (f"Cancelled by the customer in chat on {AS_OF}.", AS_OF, w["withdrawal_id"]))
+    conn.commit()
+    return _ok(withdrawal_id=w["withdrawal_id"], status="cancelled", amount=w["amount"],
+               message="The withdrawal is cancelled. The funds stay in the account as cash.")
+
+
+@requires_verification
+def update_statement_delivery(session: Session, conn, electronic, confirmed=False) -> dict:
+    """Switch statements and trade confirmations between electronic and paper delivery."""
+    if confirmed is not True:
+        return _err("CONFIRMATION_REQUIRED", "Restate the change and ask the customer to confirm. "
+                    "Call again with confirmed=true only after they clearly say yes.")
+    if not isinstance(electronic, bool):
+        return _err("BAD_ARGUMENTS", "electronic must be true or false.")
+    current = bool(_customer(conn, session.verified_customer_id)["e_delivery"])
+    if current == electronic:
+        return _ok(statement_delivery="electronic" if current else "paper", changed=False,
+                   message="No change was needed; that is already the customer's setting.")
+    conn.execute("UPDATE customers SET e_delivery = ? WHERE customer_id = ?", (int(electronic), session.verified_customer_id))
+    conn.commit()
+    fee_note = ("Paper statement fees stop from the next statement. Fees already charged are not refunded by this change."
+                if electronic else "A $5.00 fee applies to each mailed statement or trade confirmation.")
+    return _ok(statement_delivery="electronic" if electronic else "paper", changed=True, message=fee_note)
+
+
 # ----------------------------------------------------------------------------- registry
 
 TOOLS = {
@@ -430,56 +482,99 @@ TOOLS = {
     "get_performance_breakdown": get_performance_breakdown,
     "create_advisor_handoff": create_advisor_handoff,
     "escalate_to_human": escalate_to_human,
+    "cancel_withdrawal": cancel_withdrawal,
+    "update_statement_delivery": update_statement_delivery,
 }
 
-# Policy rule IDs (policy.md) that each tool enforces or informs. Shown in the demo UI side panel.
+# Policy rule IDs (policy.md) that each tool enforces in code. Shown in the demo UI side panel.
 TOOL_RULES = {
     "verify_identity": ["R1", "R2"],
-    "get_account_summary": ["R1"],
-    "get_withdrawal_status": ["R1"],
-    "get_transfer_status": ["R1"],
-    "get_fee_details": ["R1", "R3"],
+    "get_account_summary": ["R1", "R11"],
+    "get_withdrawal_status": ["R1", "R11"],
+    "get_transfer_status": ["R1", "R11"],
+    "get_fee_details": ["R1"],
     "get_performance_breakdown": ["R1", "R6"],
-    "create_advisor_handoff": ["R4", "R7"],
+    "create_advisor_handoff": ["R7"],
     "escalate_to_human": ["R8"],
+    "cancel_withdrawal": ["R1", "R9"],
+    "update_statement_delivery": ["R1", "R9"],
 }
 
-# What the model sees. Descriptions carry the operational rules the model needs at call time.
+
+def _schema(properties: dict, required: tuple = ()) -> dict:
+    return {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
+
+
+_ACCOUNT_ID = {"type": "integer", "description": "account_id as returned by verify_identity or get_account_summary."}
+
+# What the model sees: name, description, JSON Schema. Descriptions carry the rules the model needs at call time.
 TOOL_SPECS = [
     {"name": "verify_identity",
-     "description": "Verify the customer's identity before sharing any account information. Needs the locator "
-                    "(email on file, or 8-digit account number, or its last 4 digits) plus at least two of: date of "
-                    "birth, last 4 digits of the linked bank account, security word. Never tell the customer which "
-                    "factor failed. After 3 failures the session locks; then offer escalation.",
-     "parameters": {"locator": "string", "date_of_birth": "string?", "bank_last4": "string?", "security_word": "string?"}},
+     "description": "Verify the customer before sharing any account information. Needs the locator (email on file, "
+                    "8-digit account number, or its last 4 digits) plus at least two of: date of birth, last 4 digits "
+                    "of the linked bank account, security word. Never tell the customer which detail failed. After 3 "
+                    "failures the session locks; then offer escalation.",
+     "input_schema": _schema({
+         "locator": {"type": "string", "description": "Email on file, account number, or its last 4 digits."},
+         "date_of_birth": {"type": "string", "description": "Any common date format."},
+         "bank_last4": {"type": "string", "description": "Last 4 digits of the linked bank account."},
+         "security_word": {"type": "string"},
+     }, ("locator",))},
     {"name": "get_account_summary",
      "description": "Balances, cash and holdings for the verified customer. Pass account_id to narrow to one account.",
-     "parameters": {"account_id": "integer?"}},
+     "input_schema": _schema({"account_id": _ACCOUNT_ID})},
     {"name": "get_withdrawal_status",
      "description": "Status and plain-language explanation of withdrawals on the verified customer's accounts. "
-                    "Pass withdrawal_id (e.g. WD-24117) for one, or account_id to narrow.",
-     "parameters": {"account_id": "integer?", "withdrawal_id": "string?"}},
+                    "Pass withdrawal_id (for example WD-24117) for one, or account_id to narrow.",
+     "input_schema": _schema({"account_id": _ACCOUNT_ID, "withdrawal_id": {"type": "string"}})},
     {"name": "get_transfer_status",
      "description": "Status of account transfers (incoming from another firm, outgoing, or between Larkmoor accounts) "
-                    "for the verified customer. Pass transfer_id (e.g. TR-30552) for one, or account_id to narrow.",
-     "parameters": {"account_id": "integer?", "transfer_id": "string?"}},
+                    "for the verified customer. Pass transfer_id (for example TR-30552) for one, or account_id to narrow.",
+     "input_schema": _schema({"account_id": _ACCOUNT_ID, "transfer_id": {"type": "string"}})},
     {"name": "get_fee_details",
      "description": "The fee schedule (public, no verification needed) and, once verified, fees actually charged on "
-                    "the customer's accounts in the last 12 months. Optional fee_type filter.",
-     "parameters": {"fee_type": "string?"}},
+                    "the customer's accounts in the last 12 months plus their statement delivery setting.",
+     "input_schema": _schema({"fee_type": {"type": "string", "enum": [f[0] for f in FEE_SCHEDULE]}})},
     {"name": "get_performance_breakdown",
      "description": "Period return for one verified account, contribution by holding, benchmark comparison, and the "
-                    "required disclosure, which must be included when discussing performance. period: 1M, 3M, YTD or 1Y.",
-     "parameters": {"account_id": "integer", "period": "string?"}},
+                    "required disclosure, which must be included whenever performance is discussed.",
+     "input_schema": _schema({"account_id": _ACCOUNT_ID, "period": {"type": "string", "enum": list(PERIODS)}},
+                             ("account_id",))},
     {"name": "create_advisor_handoff",
-     "description": "Hand the customer to a licensed advisor when they want a recommendation, planning help, or a "
-                    "portfolio review. Requires a complete structured summary of what was discussed.",
-     "parameters": {"reason_category": "string", "summary": "string", "customer_goal": "string",
-                    "open_questions": "string[]?", "urgency": "string?", "account_id": "integer?"}},
+     "description": "Hand the customer to a licensed Larkmoor advisor, who can discuss recommendations. Use when the "
+                    "customer wants advice, planning help, or a portfolio review and agrees to be contacted. Requires "
+                    "a complete, factual summary of the conversation.",
+     "input_schema": _schema({
+         "reason_category": {"type": "string", "enum": list(HANDOFF_CATEGORIES)},
+         "summary": {"type": "string", "description": "Factual summary: the situation, figures discussed, what was asked."},
+         "customer_goal": {"type": "string", "description": "What the customer wants to achieve, in their terms."},
+         "open_questions": {"type": "array", "items": {"type": "string"},
+                            "description": "Questions for the advisor to answer."},
+         "urgency": {"type": "string", "enum": list(URGENCY_LEVELS)},
+         "account_id": _ACCOUNT_ID,
+     }, ("reason_category", "summary", "customer_goal"))},
     {"name": "escalate_to_human",
-     "description": "Transfer to a human specialist for complaints, suspected fraud, failed verification or lockout, "
-                    "account security concerns, a distressed customer, or anything out of scope. Works before verification.",
-     "parameters": {"reason_category": "string", "details": "string", "urgency": "string?"}},
+     "description": "Transfer to a human specialist for suspected fraud, account security concerns, failed "
+                    "verification or lockout, complaints, a distressed customer, an explicit request for a human, or "
+                    "anything out of scope. Works before verification.",
+     "input_schema": _schema({
+         "reason_category": {"type": "string", "enum": list(ESCALATION_CATEGORIES)},
+         "details": {"type": "string", "description": "What happened and what the customer needs."},
+         "urgency": {"type": "string", "enum": list(URGENCY_LEVELS)},
+     }, ("reason_category", "details"))},
+    {"name": "cancel_withdrawal",
+     "description": "Cancel a pending withdrawal on the verified customer's account. First restate what will be "
+                    "cancelled and get an explicit yes; only then call with confirmed=true. Processing, completed or "
+                    "on-hold withdrawals cannot be cancelled.",
+     "input_schema": _schema({"withdrawal_id": {"type": "string"},
+                              "confirmed": {"type": "boolean", "description": "True only after the customer said yes."}},
+                             ("withdrawal_id", "confirmed"))},
+    {"name": "update_statement_delivery",
+     "description": "Switch the verified customer's statements between electronic (electronic=true) and paper. "
+                    "First restate the change and get an explicit yes; only then call with confirmed=true.",
+     "input_schema": _schema({"electronic": {"type": "boolean"},
+                              "confirmed": {"type": "boolean", "description": "True only after the customer said yes."}},
+                             ("electronic", "confirmed"))},
 ]
 
 

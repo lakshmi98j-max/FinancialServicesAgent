@@ -51,7 +51,8 @@ def test_every_holding_and_benchmark_has_all_periods(conn):
 def test_scenario_anchors_exist(conn):
     """Situations the scenario files point at must be present."""
     statuses = {r["status"] for r in rows(conn, "SELECT status FROM withdrawals")}
-    assert {"processing", "on_hold", "rejected", "completed"} <= statuses
+    assert {"pending", "processing", "on_hold", "rejected", "completed"} <= statuses
+    assert conn.execute("SELECT COUNT(*) FROM customers WHERE e_delivery = 0").fetchone()[0] >= 1
     tstatuses = {r["status"] for r in rows(conn, "SELECT status FROM transfers")}
     assert {"in_transit", "rejected", "completed", "validating"} <= tstatuses
     assert conn.execute("SELECT COUNT(*) FROM transactions WHERE type = 'fee'").fetchone()[0] >= 3
@@ -61,3 +62,11 @@ def test_foreign_keys_hold():
     conn = sqlite3.connect(":memory:")
     seed.build(conn)
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_no_settlement_or_arrival_dates_fall_on_weekends(conn):
+    from datetime import date
+    dates = [r[0] for r in conn.execute(
+        "SELECT expected_arrival_on FROM withdrawals WHERE expected_arrival_on IS NOT NULL "
+        "UNION SELECT estimated_completion_on FROM transfers WHERE estimated_completion_on IS NOT NULL")]
+    assert dates and all(date.fromisoformat(d).weekday() < 5 for d in dates)
