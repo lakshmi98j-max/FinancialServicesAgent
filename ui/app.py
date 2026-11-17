@@ -21,17 +21,18 @@ from mockworld.db import connect  # noqa: E402
 from mockworld.seed import reset_db  # noqa: E402
 
 DEMO_CUSTOMERS = [
-    {"name": "Priya Raman", "story": "Portfolio down about 12% in three months",
-     "details": ["Email: priya.raman@example.com", "Date of birth: March 12, 1984", "Security word: saffron"],
-     "try": ["Why is my portfolio down so much?", "Should I sell Halverd? What would you do?"]},
-    {"name": "Marcus Oyelaran", "story": "A $2,500 withdrawal is still processing",
-     "details": ["Account ending 2915", "Date of birth: August 23, 1979", "Security word: harbor"],
-     "try": ["Where is my withdrawal?", "Can you cancel it?"]},
-    {"name": "Samuel Okafor", "story": "Paying $5 paper statement fees",
-     "details": ["Email: samuel.okafor@example.com", "Date of birth: July 19, 1975", "Bank account ends 4408"],
-     "try": ["Why am I charged $5 every quarter?", "Yes, switch me to electronic statements."]},
+    {"name": "Priya Raman", "story": "Her mortgage payment goes up $201 in December",
+     "details": ["Email: priya.raman@example.com", "Date of birth: March 12, 1984", "Property ZIP: 80302"],
+     "try": ["Why is my mortgage payment going up?", "I can't afford that. Can you refinance me at a lower rate?"]},
+    {"name": "Marcus Oyelaran", "story": "Paid his November installment online and wants autopay",
+     "details": ["Loan ending 2915", "Date of birth: August 23, 1979", "SSN last 4: 5527"],
+     "try": ["Did you get my November payment?", "Can you set up autopay from my checking account?"]},
+    {"name": "Elena Vasquez-Torres", "story": "Her home equity line application has stalled",
+     "details": ["Email: elena.vt@example.com", "Date of birth: November 2, 1991", "Property ZIP: 78704"],
+     "try": ["What's happening with my HELOC application?", "Can you just approve it today?"]},
 ]
-WRITE_TOOLS = ("create_advisor_handoff", "escalate_to_human", "cancel_withdrawal", "update_statement_delivery")
+WRITE_TOOLS = ("create_handoff", "escalate_to_human", "make_payment", "set_autopay")
+TEAM_NAMES = {"loan_officer": "Licensed loan officer", "hardship_specialist": "Hardship specialist"}
 PANE_HEIGHT = 640   # chat and side panel scroll independently so both stay in frame while recording
 
 CSS = """
@@ -162,29 +163,31 @@ def panel_body() -> None:
         st.markdown("**Records written**")
         for c in records:
             r = c.result
-            if c.name == "create_advisor_handoff":
+            if c.name == "create_handoff":
                 rec = r["recorded"]
                 with st.container(border=True):
-                    st.markdown(f"Advisor handoff **{r['handoff_id']}** · {rec['reason_category']} · {rec['urgency']} urgency")
+                    st.markdown(f"**{TEAM_NAMES[r['team']]} handoff {r['handoff_id']}** · {rec['reason_category']} · "
+                                f"{rec['urgency']} urgency")
                     st.markdown(md(f"**Summary:** {rec['summary']}"))
                     st.markdown(md(f"**Customer goal:** {rec['customer_goal']}"))
                     if rec["open_questions"]:
                         st.markdown("**Open questions**\n" + "\n".join(f"- {md(q)}" for q in rec["open_questions"]))
             elif c.name == "escalate_to_human":
                 st.info(f"Escalation {r['escalation_id']}: {c.args.get('reason_category')}, {r['urgency']} urgency")
-            elif c.name == "cancel_withdrawal":
-                st.info(md(f"Withdrawal {r['withdrawal_id']} cancelled (${r['amount']:,.2f})"))
-            elif c.name == "update_statement_delivery":
-                st.info(f"Statement delivery set to {r['statement_delivery']}")
+            elif c.name == "make_payment":
+                st.info(md(f"Payment {r['payment_id']} ({r['status']}): {r['confirmed_details']}"))
+            elif c.name == "set_autopay" and r.get("changed"):
+                st.info(md(f"Autopay updated: {r['confirmed_details']}"))
     for i, turn in reversed(list(enumerate(turns, start=1))):
         st.markdown(f'<p class="muted">Message {i}: "{html.escape(turn.customer[:70])}"</p>', unsafe_allow_html=True)
         if not turn.tool_calls:
             st.markdown('<p class="muted">No tools used.</p>', unsafe_allow_html=True)
         for c in turn.tool_calls:
-            icon = "✅" if c.ok else "⛔"
-            outcome = "" if c.ok else f" refused: {c.result.get('error')}"
-            st.markdown(f'<div class="call">{icon} {c.name}{outcome}</div>{chips(c.rules, blocked=not c.ok)}',
-                        unsafe_allow_html=True)
+            waiting = c.result.get("error") == "CONFIRMATION_REQUIRED"   # the read-back step, not a refusal
+            icon = "✅" if c.ok else "⏸️" if waiting else "⛔"
+            outcome = "" if c.ok else " waiting for the customer's yes" if waiting else f" refused: {c.result.get('error')}"
+            st.markdown(f'<div class="call">{icon} {c.name}{outcome}</div>'
+                        f'{chips(c.rules, blocked=not (c.ok or waiting))}', unsafe_allow_html=True)
             with st.expander("Details"):
                 st.json({"arguments": c.args, "result": c.result}, expanded=False)
         if turn.redactions:
@@ -208,9 +211,9 @@ def main() -> None:
             st.rerun()
         st.stop()
     sidebar()
-    st.markdown('<div class="banner"><b>Fictional company.</b> Larkmoor Invest and all customers are invented. '
-                '<b>Illustrative policy.</b> <b>Not financial advice.</b></div>', unsafe_allow_html=True)
-    prompt = st.chat_input("Message Larkmoor support")
+    st.markdown(f'<div class="banner"><b>Fictional company.</b> {BRAND} and all customers are invented. '
+                '<b>Illustrative policy.</b> <b>Not financial or legal advice.</b></div>', unsafe_allow_html=True)
+    prompt = st.chat_input(f"Message {BRAND} support")
     left, right = st.columns([3, 2], gap="large")
     with left:
         chat(prompt)

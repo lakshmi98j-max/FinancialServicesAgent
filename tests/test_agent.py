@@ -5,7 +5,7 @@ import json
 from agent import llm
 from agent.agent import load_version, list_versions, mcp_tools
 from agent.tools import TOOL_SPECS
-from config import AS_OF
+from config import AS_OF, BRAND
 
 
 def test_every_version_folder_is_complete():
@@ -13,6 +13,7 @@ def test_every_version_folder_is_complete():
     for name in list_versions():
         v = load_version(name)
         assert len(v["system_prompt"]) > 200
+        assert BRAND in v["system_prompt"] and "{brand}" not in v["system_prompt"]
         assert v["effort"] in ("low", "medium", "high", "xhigh", "max")
         assert isinstance(v["max_tool_rounds"], int) and v["description"]
 
@@ -44,14 +45,14 @@ def test_mcp_wrappers_route_through_run_tool(conn, session):
     wrapped = {t.name: t for t in mcp_tools(session, conn)}
     assert set(wrapped) == {s["name"] for s in TOOL_SPECS}
 
-    blocked = asyncio.run(wrapped["get_account_summary"].handler({}))
+    blocked = asyncio.run(wrapped["get_loan_summary"].handler({}))
     assert blocked["is_error"] is True
     assert json.loads(blocked["content"][0]["text"])["error"] == "SESSION_NOT_VERIFIED"
 
     ok = asyncio.run(wrapped["verify_identity"].handler(
-        {"locator": "priya.raman@example.com", "date_of_birth": "1984-03-12", "security_word": "saffron"}))
+        {"locator": "priya.raman@example.com", "date_of_birth": "1984-03-12", "property_zip": "80302"}))
     assert ok["is_error"] is False and session.verified_customer_id == 1
-    assert [c.name for c in session.trace] == ["get_account_summary", "verify_identity"]
+    assert [c.name for c in session.trace] == ["get_loan_summary", "verify_identity"]
 
 
 def test_claude_errors_become_actionable_messages():

@@ -1,4 +1,4 @@
-"""Command-line chat with the Larkmoor agent.
+"""Command-line chat with the support agent.
 
     python -m agent.chat                 # newest version
     python -m agent.chat --version v1
@@ -64,7 +64,7 @@ def main() -> None:
                 print(f"\n[error] {exc}")
                 continue
             show_calls(turn.tool_calls)
-            print(f"\nlarkmoor> {turn.reply}")
+            print(f"\nagent> {turn.reply}")
     finally:
         print(f"\nUsage: {agent.agent.usage.line()}")
         stop(agent)

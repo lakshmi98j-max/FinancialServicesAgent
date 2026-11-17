@@ -1,4 +1,4 @@
-"""The Larkmoor support agent. One conversation is one Claude session, one Larkmoor Session, one database.
+"""The support agent. One conversation is one Claude session, one tools Session, and one database.
 
     agent = Agent("v1", conn)                    # async, used by the eval runner
     await agent.start(); turn = await agent.send("Hi"); await agent.close()
@@ -7,6 +7,7 @@
     turn = agent.send("Hi"); agent.close()
 
 A version is a folder in agent/versions/ holding system_prompt.md and config.json. Model IDs live in config.py.
+Prompts write the company name as {brand}; it is filled in from config.BRAND so a rename is one edit.
 """
 import asyncio
 import json
@@ -20,11 +21,11 @@ from claude_agent_sdk import (AssistantMessage, ClaudeSDKClient, RateLimitEvent,
 from agent import llm
 from agent.session import Session, ToolCall
 from agent.tools import TOOL_SPECS, run_tool
-from config import MODELS
+from config import BRAND, MODELS
 from mockworld.db import connect
 
 VERSIONS_DIR = Path(__file__).parent / "versions"
-SERVER = "larkmoor"   # the model sees tools as mcp__larkmoor__<name>
+SERVER = "servicing"   # the model sees tools as mcp__servicing__<name>
 
 
 def list_versions() -> list[str]:
@@ -34,11 +35,12 @@ def list_versions() -> list[str]:
 def load_version(name: str) -> dict:
     folder = VERSIONS_DIR / name
     config = json.loads((folder / "config.json").read_text())
-    return {"name": name, "system_prompt": (folder / "system_prompt.md").read_text(), **config}
+    prompt = (folder / "system_prompt.md").read_text().replace("{brand}", BRAND)
+    return {"name": name, "system_prompt": prompt, **config}
 
 
 def mcp_tools(session: Session, conn) -> list:
-    """Wrap each Larkmoor tool for the SDK. Every call goes through run_tool, so it is gated and traced."""
+    """Wrap each tool for the SDK. Every call goes through run_tool, so it is gated and traced."""
     def make(spec: dict):
         async def handler(args: dict) -> dict:
             result = run_tool(session, conn, spec["name"], args)
@@ -129,7 +131,7 @@ class BlockingAgent:
 
     def __init__(self, version: str = "v1", conn=None):
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True, name="larkmoor-agent")
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True, name="support-agent")
         self._thread.start()
         self.agent = Agent(version, conn)
         self._call(self.agent.start())

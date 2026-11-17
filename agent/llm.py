@@ -27,7 +27,7 @@ QUIET_ENV = {"CLAUDE_CODE_DISABLE_ATTACHMENTS": "1", "CLAUDE_CODE_DISABLE_CLAUDE
 RUNTIME_DIR = DATA_DIR / "runtime"   # neutral, empty working directory for the Claude Code subprocess
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}")
-FICTIONAL_EMAIL_DOMAINS = ("example.com",)   # every Larkmoor customer email uses this reserved domain
+FICTIONAL_EMAIL_DOMAINS = ("example.com",)   # every mock customer email uses this reserved domain
 
 
 def system_prompt(role_prompt: str) -> str:

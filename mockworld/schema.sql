@@ -1,18 +1,6 @@
--- Larkmoor Invest mock world. Every table is rebuilt from seed.py; nothing here is real.
+-- Mock world for a fictional mortgage and home equity lender that services its own loans.
+-- Every table is rebuilt from seed.py. Nothing here is real.
 PRAGMA foreign_keys = ON;
-
-CREATE TABLE benchmarks (
-  benchmark_id  TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  description   TEXT NOT NULL
-);
-
-CREATE TABLE benchmark_returns (
-  benchmark_id  TEXT NOT NULL REFERENCES benchmarks(benchmark_id),
-  period        TEXT NOT NULL,            -- 1M | 3M | YTD | 1Y
-  return_pct    REAL NOT NULL,
-  PRIMARY KEY (benchmark_id, period)
-);
 
 CREATE TABLE customers (
   customer_id    INTEGER PRIMARY KEY,
@@ -21,101 +9,127 @@ CREATE TABLE customers (
   email          TEXT NOT NULL UNIQUE,
   phone_last4    TEXT NOT NULL,
   date_of_birth  TEXT NOT NULL,           -- verification factor
-  bank_last4     TEXT NOT NULL,           -- last 4 of linked bank account, verification factor
-  security_word  TEXT NOT NULL,           -- verification factor
-  customer_since TEXT NOT NULL,
-  e_delivery     INTEGER NOT NULL,        -- 1 = electronic statements, 0 = paper
-  risk_profile   TEXT NOT NULL            -- conservative | balanced | growth
+  ssn_last4      TEXT NOT NULL,           -- verification factor (last 4 of the Social Security number)
+  property_zip   TEXT NOT NULL,           -- verification factor (ZIP code of the primary property)
+  customer_since TEXT NOT NULL
 );
 
-CREATE TABLE accounts (
-  account_id     INTEGER PRIMARY KEY,
-  customer_id    INTEGER NOT NULL REFERENCES customers(customer_id),
-  account_number TEXT NOT NULL UNIQUE,    -- 8 digits; last 4 are unique across all accounts
-  account_type   TEXT NOT NULL,           -- individual | roth_ira | traditional_ira
-  managed        INTEGER NOT NULL,        -- 1 = enrolled in managed portfolios (advisory fee applies)
-  benchmark_id   TEXT NOT NULL REFERENCES benchmarks(benchmark_id),
-  cash_balance   REAL NOT NULL,
-  settled_cash   REAL NOT NULL,           -- cash available to withdraw today
-  opened_on      TEXT NOT NULL
+CREATE TABLE bank_accounts (              -- accounts already verified and linked; chat cannot add new ones
+  customer_id  INTEGER NOT NULL REFERENCES customers(customer_id),
+  bank_last4   TEXT NOT NULL,
+  account_type TEXT NOT NULL,             -- checking | savings
+  linked_on    TEXT NOT NULL,
+  PRIMARY KEY (customer_id, bank_last4)
 );
 
-CREATE TABLE securities (
-  symbol      TEXT PRIMARY KEY,           -- fictional tickers only
-  name        TEXT NOT NULL,
-  asset_class TEXT NOT NULL,              -- equity | equity_fund | bond_fund | reit
-  sector      TEXT NOT NULL,
-  price       REAL NOT NULL               -- closing price on the as-of date
+CREATE TABLE loans (
+  loan_id                    INTEGER PRIMARY KEY,
+  customer_id                INTEGER NOT NULL REFERENCES customers(customer_id),
+  loan_number                TEXT NOT NULL UNIQUE,   -- 10 digits; last 4 are unique across all loans
+  loan_type                  TEXT NOT NULL,          -- mortgage | heloc
+  property_address           TEXT NOT NULL,
+  interest_rate              REAL NOT NULL,          -- annual percentage rate on the note
+  rate_type                  TEXT NOT NULL,          -- fixed | variable
+  original_amount            REAL NOT NULL,          -- mortgage: amount borrowed; heloc: credit limit
+  origination_date           TEXT NOT NULL,
+  term_months                INTEGER NOT NULL,
+  first_payment_date         TEXT NOT NULL,
+  principal_balance          REAL NOT NULL,
+  monthly_principal_interest REAL NOT NULL,          -- heloc: interest-only payment during the draw period
+  monthly_escrow             REAL NOT NULL,          -- property tax and insurance collected monthly; 0 for heloc
+  escrow_balance             REAL NOT NULL,
+  next_due_date              TEXT NOT NULL,          -- oldest unpaid installment
+  autopay_enabled            INTEGER NOT NULL,
+  autopay_bank_last4         TEXT,
+  autopay_updated_on         TEXT,
+  credit_limit               REAL,                   -- heloc only
+  draw_period_ends_on        TEXT,                   -- heloc only
+  forbearance_start          TEXT,
+  forbearance_end            TEXT,
+  deferred_amount            REAL,                   -- installments skipped during forbearance
+  special_handling           TEXT,                   -- NULL | bankruptcy
+  special_handling_note      TEXT
 );
 
-CREATE TABLE security_returns (
-  symbol     TEXT NOT NULL REFERENCES securities(symbol),
-  period     TEXT NOT NULL,
-  return_pct REAL NOT NULL,
-  PRIMARY KEY (symbol, period)
+CREATE TABLE payments (
+  payment_id       TEXT PRIMARY KEY,
+  loan_id          INTEGER NOT NULL REFERENCES loans(loan_id),
+  for_due_date     TEXT NOT NULL,         -- installment the payment applies to
+  received_on      TEXT NOT NULL,         -- or the scheduled date for future payments
+  amount           REAL NOT NULL,
+  applied_principal REAL,
+  applied_interest REAL,
+  applied_escrow   REAL,
+  method           TEXT NOT NULL,         -- autopay | online | phone | bank_bill_pay | chat
+  bank_last4       TEXT,
+  status           TEXT NOT NULL,         -- posted | returned | pending | scheduled
+  status_note      TEXT
 );
 
-CREATE TABLE holdings (
-  account_id INTEGER NOT NULL REFERENCES accounts(account_id),
-  symbol     TEXT NOT NULL REFERENCES securities(symbol),
-  quantity   REAL NOT NULL,
-  cost_basis REAL NOT NULL,               -- total amount paid
-  PRIMARY KEY (account_id, symbol)
+CREATE TABLE heloc_draws (                -- money borrowed from a home equity line, sent to a linked bank account
+  draw_id       TEXT PRIMARY KEY,
+  loan_id       INTEGER NOT NULL REFERENCES loans(loan_id),
+  drawn_on      TEXT NOT NULL,
+  amount        REAL NOT NULL,
+  to_bank_last4 TEXT NOT NULL,
+  channel       TEXT NOT NULL             -- online | phone | branch
 );
 
-CREATE TABLE transactions (
-  transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  account_id     INTEGER NOT NULL REFERENCES accounts(account_id),
-  posted_on      TEXT NOT NULL,
-  type           TEXT NOT NULL,           -- deposit | withdrawal | buy | sell | dividend | fee | transfer_in | transfer_out
-  symbol         TEXT,
-  quantity       REAL,
-  amount         REAL NOT NULL,           -- signed: cash in is positive, cash out is negative
-  description    TEXT NOT NULL
+CREATE TABLE fees_charged (
+  fee_id     INTEGER PRIMARY KEY,
+  loan_id    INTEGER NOT NULL REFERENCES loans(loan_id),
+  charged_on TEXT NOT NULL,
+  fee_type   TEXT NOT NULL REFERENCES fee_schedule(fee_type),
+  amount     REAL NOT NULL,
+  status     TEXT NOT NULL,               -- unpaid | paid
+  note       TEXT NOT NULL
 );
 
-CREATE TABLE withdrawals (
-  withdrawal_id          TEXT PRIMARY KEY,
-  account_id             INTEGER NOT NULL REFERENCES accounts(account_id),
-  requested_on           TEXT NOT NULL,
-  amount                 REAL NOT NULL,
-  destination_bank_last4 TEXT NOT NULL,
-  method                 TEXT NOT NULL,   -- ach | wire
-  status                 TEXT NOT NULL,   -- pending | processing | completed | on_hold | rejected | cancelled
-  status_reason          TEXT,
-  expected_arrival_on    TEXT,
-  updated_on             TEXT NOT NULL
+CREATE TABLE escrow_analyses (
+  loan_id                 INTEGER NOT NULL REFERENCES loans(loan_id),
+  analysis_date           TEXT NOT NULL,
+  effective_date          TEXT NOT NULL,  -- first installment at the new payment
+  prior_annual_tax        REAL NOT NULL,
+  new_annual_tax          REAL NOT NULL,
+  prior_annual_insurance  REAL NOT NULL,
+  new_annual_insurance    REAL NOT NULL,
+  shortage_amount         REAL NOT NULL,
+  surplus_amount          REAL NOT NULL,
+  spread_months           INTEGER NOT NULL,
+  PRIMARY KEY (loan_id, analysis_date)
 );
 
-CREATE TABLE transfers (
-  transfer_id             TEXT PRIMARY KEY,
-  account_id              INTEGER NOT NULL REFERENCES accounts(account_id),
-  direction               TEXT NOT NULL,  -- incoming | outgoing | internal
-  counterparty            TEXT NOT NULL,  -- other institution, or the other Larkmoor account
-  transfer_type           TEXT NOT NULL,  -- full_account | partial | cash
-  amount                  REAL,
-  status                  TEXT NOT NULL,  -- initiated | validating | in_transit | completed | rejected
-  status_reason           TEXT,
-  initiated_on            TEXT NOT NULL,
-  estimated_completion_on TEXT,
-  updated_on              TEXT NOT NULL
+CREATE TABLE applications (               -- home equity line of credit applications in progress
+  application_id        TEXT PRIMARY KEY,
+  customer_id           INTEGER NOT NULL REFERENCES customers(customer_id),
+  product               TEXT NOT NULL,
+  property_address      TEXT NOT NULL,
+  requested_amount      REAL NOT NULL,
+  submitted_on          TEXT NOT NULL,
+  stage                 TEXT NOT NULL,    -- submitted | conditions_outstanding | underwriting | approved_closing_scheduled | withdrawn
+  outstanding_items     TEXT NOT NULL,    -- JSON list of plain-language steps the applicant still owes
+  loan_officer          TEXT NOT NULL,
+  last_activity_on      TEXT NOT NULL,
+  estimated_closing_on  TEXT,
+  note                  TEXT
 );
 
 CREATE TABLE fee_schedule (
   fee_type     TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
   amount       REAL NOT NULL,
-  unit         TEXT NOT NULL,             -- per_item | per_statement | per_contract | per_trade | per_month | pct_annual
+  unit         TEXT NOT NULL,             -- per_item | per_year | pct_of_principal_and_interest
   description  TEXT NOT NULL,
   waiver       TEXT
 );
 
 -- Written by the agent's tools during a conversation. Evals compare these to the expected final state.
-CREATE TABLE advisor_handoffs (
+CREATE TABLE handoffs (
   handoff_id      TEXT PRIMARY KEY,
   customer_id     INTEGER NOT NULL REFERENCES customers(customer_id),
-  account_id      INTEGER REFERENCES accounts(account_id),
+  loan_id         INTEGER REFERENCES loans(loan_id),
   created_on      TEXT NOT NULL,
+  team            TEXT NOT NULL,          -- loan_officer | hardship_specialist
   reason_category TEXT NOT NULL,
   summary         TEXT NOT NULL,
   customer_goal   TEXT NOT NULL,

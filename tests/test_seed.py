@@ -1,14 +1,14 @@
-"""The mock world must be deterministic and internally consistent."""
+"""The mock world must be deterministic, internally consistent, and contain every situation scenarios rely on."""
 import sqlite3
+from datetime import date
 
 from mockworld import seed
 from mockworld.db import connect, rows
-from mockworld.seed import fingerprint, memory_db, reset_db
+from mockworld.seed import fingerprint, memory_db, monthly_payment, reset_db
 
 
 def test_rebuild_is_byte_identical():
-    a, b = memory_db(), memory_db()
-    assert fingerprint(a) == fingerprint(b)
+    assert fingerprint(memory_db()) == fingerprint(memory_db())
 
 
 def test_reset_db_recreates_file(tmp_path):
@@ -19,43 +19,7 @@ def test_reset_db_recreates_file(tmp_path):
     conn.commit()
     conn.close()
     reset_db(path)
-    fresh = connect(path)
-    assert fresh.execute("SELECT COUNT(*) FROM escalations").fetchone()[0] == 0
-    assert fingerprint(fresh) == fingerprint(memory_db())
-
-
-def test_world_shape(conn):
-    assert conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 20
-    assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] >= 20
-    orphan = conn.execute("""SELECT COUNT(*) FROM customers c
-                             WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.customer_id = c.customer_id)""").fetchone()[0]
-    assert orphan == 0
-    assert conn.execute("SELECT COUNT(*) FROM advisor_handoffs").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM escalations").fetchone()[0] == 0
-
-
-def test_account_last4_unique(conn):
-    last4 = [r["l4"] for r in rows(conn, "SELECT substr(account_number, -4) AS l4 FROM accounts")]
-    assert len(last4) == len(set(last4)), "verify_identity locates by last 4, so they must be unique"
-
-
-def test_every_holding_and_benchmark_has_all_periods(conn):
-    for table, key in (("security_returns", "symbol"), ("benchmark_returns", "benchmark_id")):
-        counts = rows(conn, f"SELECT {key} AS k, COUNT(*) AS n FROM {table} GROUP BY {key}")
-        assert all(c["n"] == 4 for c in counts), table
-    missing = conn.execute("""SELECT COUNT(*) FROM holdings h
-                              WHERE NOT EXISTS (SELECT 1 FROM securities s WHERE s.symbol = h.symbol)""").fetchone()[0]
-    assert missing == 0
-
-
-def test_scenario_anchors_exist(conn):
-    """Situations the scenario files point at must be present."""
-    statuses = {r["status"] for r in rows(conn, "SELECT status FROM withdrawals")}
-    assert {"pending", "processing", "on_hold", "rejected", "completed"} <= statuses
-    assert conn.execute("SELECT COUNT(*) FROM customers WHERE e_delivery = 0").fetchone()[0] >= 1
-    tstatuses = {r["status"] for r in rows(conn, "SELECT status FROM transfers")}
-    assert {"in_transit", "rejected", "completed", "validating"} <= tstatuses
-    assert conn.execute("SELECT COUNT(*) FROM transactions WHERE type = 'fee'").fetchone()[0] >= 3
+    assert fingerprint(connect(path)) == fingerprint(memory_db())
 
 
 def test_foreign_keys_hold():
@@ -64,9 +28,51 @@ def test_foreign_keys_hold():
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_no_settlement_or_arrival_dates_fall_on_weekends(conn):
-    from datetime import date
+def test_world_shape(conn):
+    assert conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 20
+    assert conn.execute("SELECT COUNT(*) FROM loans").fetchone()[0] == 21
+    no_loan = conn.execute("""SELECT COUNT(*) FROM customers c
+                              WHERE NOT EXISTS (SELECT 1 FROM loans l WHERE l.customer_id = c.customer_id)""").fetchone()[0]
+    assert no_loan == 0
+    assert conn.execute("SELECT COUNT(*) FROM handoffs").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM escalations").fetchone()[0] == 0
+
+
+def test_loan_number_last4_unique(conn):
+    last4 = [r["l4"] for r in rows(conn, "SELECT substr(loan_number, -4) AS l4 FROM loans")]
+    assert len(last4) == len(set(last4)), "verify_identity locates by the last 4 digits, so they must be unique"
+
+
+def test_payment_formula_matches_a_known_value():
+    assert monthly_payment(200000, 6.0, 360) == 1199.10
+
+
+def test_posted_payments_split_exactly(conn):
+    for p in rows(conn, "SELECT * FROM payments WHERE status = 'posted' AND applied_principal IS NOT NULL"):
+        assert round(p["applied_principal"] + p["applied_interest"] + p["applied_escrow"], 2) == p["amount"], p["payment_id"]
+
+
+def test_mortgage_balances_fall_with_each_payment(conn):
+    for loan in rows(conn, "SELECT * FROM loans WHERE loan_type = 'mortgage'"):
+        assert 0 < loan["principal_balance"] <= loan["original_amount"]
+        assert loan["monthly_principal_interest"] == monthly_payment(loan["original_amount"], loan["interest_rate"],
+                                                                     loan["term_months"])
+
+
+def test_scenario_anchors_exist(conn):
+    statuses = {r["status"] for r in rows(conn, "SELECT status FROM payments")}
+    assert {"posted", "returned", "scheduled"} <= statuses
+    assert conn.execute("SELECT next_due_date FROM loans WHERE loan_id = 104").fetchone()[0] == "2026-10-01"
+    assert conn.execute("SELECT next_due_date, deferred_amount FROM loans WHERE loan_id = 115").fetchone()[0] == "2026-11-01"
+    assert conn.execute("SELECT special_handling FROM loans WHERE loan_id = 112").fetchone()[0] == "bankruptcy"
+    assert conn.execute("SELECT COUNT(*) FROM escrow_analyses WHERE shortage_amount > 0").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM applications WHERE stage = 'conditions_outstanding'").fetchone()[0] == 1
+    assert conn.execute("SELECT to_bank_last4 FROM heloc_draws WHERE draw_id = 'DR-7590'").fetchone()[0] == "9930"
+    assert conn.execute("SELECT COUNT(*) FROM fees_charged WHERE status = 'unpaid'").fetchone()[0] == 3
+
+
+def test_due_and_closing_dates_are_business_days(conn):
     dates = [r[0] for r in conn.execute(
-        "SELECT expected_arrival_on FROM withdrawals WHERE expected_arrival_on IS NOT NULL "
-        "UNION SELECT estimated_completion_on FROM transfers WHERE estimated_completion_on IS NOT NULL")]
+        "SELECT received_on FROM payments UNION SELECT estimated_closing_on FROM applications "
+        "WHERE estimated_closing_on IS NOT NULL")]
     assert dates and all(date.fromisoformat(d).weekday() < 5 for d in dates)

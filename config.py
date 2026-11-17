@@ -6,9 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
-DB_PATH = DATA_DIR / "larkmoor.db"
+DB_PATH = DATA_DIR / "lender.db"
 
-BRAND = "Larkmoor Invest"
+BRAND = "Larkmoor Home Loans"   # the only place the brand name is set in code
 AS_OF = "2026-11-06"  # the mock world is frozen at this business date
 
 # Model IDs, settable per role. The Claude Agent SDK accepts full IDs or aliases.

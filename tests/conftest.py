@@ -17,10 +17,14 @@ def session():
     return Session()
 
 
-@pytest.fixture
-def verified(conn):
-    """A session verified as customer 1 (Priya Raman, account 101)."""
+def verify(conn, locator, **factors) -> Session:
     s = Session()
-    r = tools.verify_identity(s, conn, "priya.raman@example.com", date_of_birth="1984-03-12", security_word="saffron")
-    assert r["ok"] and s.verified_customer_id == 1
+    r = tools.verify_identity(s, conn, locator, **factors)
+    assert r["ok"], r
     return s
+
+
+@pytest.fixture
+def priya(conn):
+    """Customer 1: mortgage 101, payment rising in December after an escrow analysis."""
+    return verify(conn, "priya.raman@example.com", date_of_birth="1984-03-12", property_zip="80302")

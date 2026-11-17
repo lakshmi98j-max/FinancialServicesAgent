@@ -1,26 +1,31 @@
-# Larkmoor Invest support agent
+# Larkmoor Home Loans support agent
 
-A customer service chat agent for a fictional consumer investing app, built to handle regulated financial
-conversations: verify identity, explain account facts and performance, never give investment advice, and hand off
-to a licensed advisor with a clean summary. A tau-bench style evaluation harness measures it.
+A customer service chat agent for a fictional mortgage and home equity lender, built to handle regulated lending
+conversations. It verifies identity, explains loan facts, takes payments and autopay changes the customer confirms,
+never quotes rates or promises approval, and hands customers to a licensed loan officer or a hardship specialist
+with a clean summary. A tau-bench style evaluation harness measures it.
 
-> Work in progress. Milestones M1 (mock world, tools, tests) and M2 (policy, agent v1, chat interfaces) are done.
-> The evaluation harness, later agent versions, results, and the full write-up follow.
+The use cases mirror the lending work Sierra has described publicly: loan status and payments, help with stalled home
+equity applications, and routing to licensed loan officers.
 
-**Fictional company. Illustrative policy. Not financial advice.** All customers, accounts, and tickers are invented.
+> Work in progress. The mock world, tools, policy, agent v1, and chat interfaces are done. The evaluation harness,
+> later agent versions, results, and the full write-up follow.
+
+**Fictional company. Illustrative policy. Not financial or legal advice.** All customers, loans, and addresses are
+invented. The company name is set in one place, `config.py`.
 
 ## What is here so far
 
 | Path | What it is |
 |---|---|
 | `policy.md` | The rules the agent follows, R1 to R12, with what code enforces and what the model must judge |
-| `mockworld/` | SQLite schema and a deterministic seed: 20 customers, accounts, holdings, withdrawals, transfers, fees |
-| `agent/tools.py` | The 10 tools. Code-enforced rules live here, such as no account data before verification |
+| `mockworld/` | SQLite schema and a deterministic seed: 20 borrowers, 21 mortgages and home equity lines, payments, escrow analyses, applications, fees |
+| `agent/tools.py` | The 11 tools. Code-enforced rules live here, such as no loan data before verification |
 | `agent/llm.py` | The one place that talks to Claude, through the Claude Agent SDK |
 | `agent/agent.py` | One conversation: Claude session, tool wiring, trace of every tool call |
 | `agent/versions/v1/` | The baseline agent: one plain system prompt plus the tools |
 | `agent/chat.py` | Command-line chat |
-| `ui/app.py` | Streamlit demo with a side panel of tool calls and policy rules |
+| `ui/app.py` | Streamlit demo with a side panel of tool calls, policy rules, and records written |
 | `tests/` | Unit tests for the seed, every tool, and the agent wiring. No model calls |
 | `.devcontainer/` | GitHub Codespaces setup |
 
@@ -50,8 +55,8 @@ Requires Python 3.11 or newer.
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m mockworld.seed        # builds data/larkmoor.db, which is not committed
-pytest                          # 80 tests, no model calls
+python -m mockworld.seed        # builds data/lender.db, which is not committed
+pytest                          # 101 tests, no model calls
 ```
 
 The agent calls Claude through the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview), which
